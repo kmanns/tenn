@@ -18,6 +18,95 @@ import { events } from '@dropins/tools/event-bus.js';
 import { readBlockConfig } from '../../scripts/aem.js';
 import { fetchPlaceholders, getProductLink } from '../../scripts/commerce.js';
 import { getSearchStateFromUrl, applySearchStateToUrl } from './search-url.js';
+// Config
+import { getConfigValue } from '@dropins/tools/lib/aem/configs.js';
+
+// Fallback SKUs — queried directly from Catalog Service when Live Search returns 0
+const FALLBACK_SKUS = [
+  'TNSP-1001', 'TNSP-1002', 'TNSP-1003', 'TNSP-1004',
+  'TNSP-1005', 'TNSP-1006', 'TNSP-1007', 'TNSP-1008', 'TNSP-1009',
+];
+
+async function fetchProductsBySku(skus) {
+  const endpoint = getConfigValue('commerce-core-endpoint') || getConfigValue('commerce-endpoint');
+  if (!endpoint) return [];
+  const headers = {
+    'Content-Type': 'application/json',
+    Store: getConfigValue('headers.all.Store') || 'tenneng',
+    'Magento-Store-View-Code': getConfigValue('headers.cs.Magento-Store-View-Code') || 'tenneng',
+    'Magento-Store-Code': getConfigValue('headers.cs.Magento-Store-Code') || 'tsp',
+    'Magento-Website-Code': getConfigValue('headers.cs.Magento-Website-Code') || 'tenn',
+  };
+  const query = `{ products(skus: ${JSON.stringify(skus)}) {
+    sku name urlKey
+    images { url roles }
+    ... on SimpleProductView { price { final { amount { value currency } } } }
+    ... on ComplexProductView { priceRange { minimum { final { amount { value currency } } } } }
+  } }`;
+  try {
+    const r = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ query }) });
+    const d = await r.json();
+    return d?.data?.products || [];
+  } catch { return []; }
+}
+
+function renderFallbackGrid(container, products, getLink) {
+  const outer = document.createElement('div');
+  outer.className = 'product-discovery-product-list';
+  const inner = document.createElement('div');
+  inner.className = 'product-discovery-product-list__container';
+  const grid = document.createElement('div');
+  grid.className = 'product-discovery-product-list__grid';
+
+  for (const product of products) {
+    const img = (product.images || []).find((i) => (i.roles || []).includes('image')) || product.images?.[0];
+    const priceVal = product.price?.final?.amount?.value
+      ?? product.priceRange?.minimum?.final?.amount?.value ?? 0;
+    const currency = product.price?.final?.amount?.currency
+      ?? product.priceRange?.minimum?.final?.amount?.currency ?? 'USD';
+    const priceStr = new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(priceVal);
+    const href = getLink(product.urlKey, product.sku);
+
+    const card = document.createElement('div');
+    card.className = 'dropin-product-item-card';
+    card.style.cssText = '--imageWidth:1;--imageHeight:1;';
+
+    const anchor = document.createElement('a');
+    anchor.href = href;
+
+    if (img?.url) {
+      const imgEl = document.createElement('img');
+      imgEl.src = `${img.url}?width=300&format=webply&quality=85`;
+      imgEl.alt = product.name;
+      imgEl.loading = 'lazy';
+      imgEl.style.cssText = 'width:100%;aspect-ratio:1/1;object-fit:cover;display:block;';
+      anchor.appendChild(imgEl);
+    }
+
+    const info = document.createElement('div');
+    info.style.cssText = 'padding:var(--spacing-small,12px);';
+
+    const nameEl = document.createElement('p');
+    nameEl.style.cssText = 'margin:0 0 var(--spacing-xsmall,8px);font:var(--type-body-1-default-font,1rem/1.4 sans-serif);';
+    nameEl.textContent = product.name;
+
+    const priceEl = document.createElement('p');
+    priceEl.className = 'product-price';
+    priceEl.style.cssText = 'margin:0;font-weight:600;';
+    priceEl.textContent = priceStr;
+
+    info.appendChild(nameEl);
+    info.appendChild(priceEl);
+    anchor.appendChild(info);
+    card.appendChild(anchor);
+    grid.appendChild(card);
+  }
+
+  inner.appendChild(grid);
+  outer.appendChild(inner);
+  container.innerHTML = '';
+  container.appendChild(outer);
+}
 
 // Initializers
 import '../../scripts/initializers/search.js';
@@ -232,9 +321,19 @@ export default async function decorate(block) {
 
   // Listen for search results (event is fired after the block is rendered; eager: false)
   // URL is owned by this project; update it when search state changes.
-  events.on('search/result', (payload) => {
+  events.on('search/result', async (payload) => {
     const url = new URL(window.location.href);
     applySearchStateToUrl(url, payload.request);
     window.history.pushState({}, '', url.toString());
+
+    // Fallback: if Live Search returns 0 products, load directly from Catalog Service
+    if ((payload.result?.totalCount || 0) === 0) {
+      const fallback = await fetchProductsBySku(FALLBACK_SKUS);
+      if (fallback.length > 0) {
+        renderFallbackGrid($productList, fallback, getProductLink);
+        block.classList.remove('product-list-page--empty');
+        $resultInfo.innerHTML = `${fallback.length} results found.`;
+      }
+    }
   }, { eager: false });
 }
