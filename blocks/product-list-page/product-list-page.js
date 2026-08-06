@@ -65,7 +65,7 @@ function renderFallbackGrid(container, products, getLink) {
     const currency = product.price?.final?.amount?.currency
       ?? product.priceRange?.minimum?.final?.amount?.currency ?? 'USD';
     const priceStr = new Intl.NumberFormat('en-US', { style: 'currency', currency }).format(priceVal);
-    const href = getLink(product.urlKey, product.sku);
+    const href = getLink(product.urlKey, product.sku.toLowerCase());
 
     const card = document.createElement('div');
     card.className = 'dropin-product-item-card';
